@@ -1,0 +1,117 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  clerkId            String    @unique
+  email              String    @unique
+  createdAt          DateTime  @default(now())
+  timezone           String    @default("America/New_York")
+  subscriptionStatus String    @default("free") // free, trial, active, canceled
+  stripeCustomerId   String?   @unique
+  stripeSubscriptionId String? @unique
+  goalId             String?
+  goal               Goal?     @relation(fields: [goalId], references: [id])
+  preferences        Json?     // { tone, vegetarian, allergies, noCalories, etc }
+  
+  checkIns           CheckIn[]
+  weeklySummaries    WeeklySummary[]
+  
+  @@index([clerkId])
+  @@index([email])
+}
+
+model Goal {
+  id          String   @id @default(cuid())
+  name        String   // e.g. "Reduce snacking"
+  description String
+  constraints Json?    // what feedback should prioritize
+  createdAt   DateTime @default(now())
+  
+  users       User[]
+}
+
+model CheckIn {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      String   // local date YYYY-MM-DD
+  mealType  String   // breakfast, lunch, dinner, snack, full-day
+  notes     String?
+  createdAt DateTime @default(now())
+  
+  photos    CheckInPhoto[]
+  answers   CheckInAnswers?
+  aiResult  AIResult?
+  
+  @@index([userId, date])
+  @@index([userId, createdAt])
+}
+
+model CheckInPhoto {
+  id         String   @id @default(cuid())
+  checkInId  String
+  checkIn    CheckIn  @relation(fields: [checkInId], references: [id], onDelete: Cascade)
+  url        String
+  thumbUrl   String?
+  takenAt    DateTime?
+  createdAt  DateTime @default(now())
+  
+  @@index([checkInId])
+}
+
+model CheckInAnswers {
+  id              String   @id @default(cuid())
+  checkInId       String   @unique
+  checkIn         CheckIn  @relation(fields: [checkInId], references: [id], onDelete: Cascade)
+  
+  drinksCalories  String?  // yes, no, unsure
+  alcohol         String?  // yes, no
+  snacks          String?  // yes, no
+  cookingTastes   String?  // yes, no
+  supplements     String?  // yes, no
+  missedMeals     String?  // yes, no
+  hungerLevel     Int?     // 1-5
+  stressLevel     Int?     // 1-5
+  
+  createdAt       DateTime @default(now())
+}
+
+model AIResult {
+  id            String   @id @default(cuid())
+  checkInId     String   @unique
+  checkIn       CheckIn  @relation(fields: [checkInId], references: [id], onDelete: Cascade)
+  
+  habitScore    Json     // { protein, plants, liquids, snacks, training }
+  feedbackShort String   @db.Text
+  oneAction     String   @db.Text
+  confidence    String   // low, med, high
+  flags         Json?    // { possibleED, medical, unsafe, etc }
+  modelVersion  String
+  createdAt     DateTime @default(now())
+  
+  @@index([checkInId])
+}
+
+model WeeklySummary {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weekKey       String   // YYYY-WW
+  summary       String   @db.Text
+  pattern       String   @db.Text
+  nextWeekFocus String   @db.Text
+  createdAt     DateTime @default(now())
+  
+  @@unique([userId, weekKey])
+  @@index([userId, weekKey])
+}

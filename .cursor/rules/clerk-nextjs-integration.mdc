@@ -1,0 +1,84 @@
+---
+description: Clerk authentication integration for Next.js App Router
+alwaysApply: true
+---
+
+# Clerk Next.js App Router Integration
+
+Use only the **current App Router** approach from Clerk's official docs.
+
+## Required Setup
+
+1. **Install**: `@clerk/nextjs@latest`
+2. **Middleware**: Use `clerkMiddleware()` in `middleware.ts` (or `proxy.ts`)
+3. **Provider**: Wrap app with `<ClerkProvider>` in `app/layout.tsx`
+4. **Components**: Import from `@clerk/nextjs`
+
+## ✅ CORRECT Pattern
+
+```typescript
+// middleware.ts or proxy.ts
+import { clerkMiddleware } from '@clerk/nextjs/server'
+
+export default clerkMiddleware()
+
+export const config = {
+  matcher: [
+    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
+    '/(api|trpc)(.*)',
+  ],
+}
+```
+
+```typescript
+// app/layout.tsx
+import { ClerkProvider, SignInButton, SignedIn, SignedOut, UserButton } from '@clerk/nextjs'
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <ClerkProvider>
+      <html lang="en">
+        <body>
+          <SignedOut><SignInButton /></SignedOut>
+          <SignedIn><UserButton /></SignedIn>
+          {children}
+        </body>
+      </html>
+    </ClerkProvider>
+  )
+}
+```
+
+```typescript
+// Server-side auth
+import { auth } from '@clerk/nextjs/server'
+
+export async function GET() {
+  const { userId } = await auth()
+  if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+  // ...
+}
+```
+
+## ❌ NEVER Use These Patterns
+
+```typescript
+// ❌ Outdated middleware
+import { authMiddleware } from '@clerk/nextjs'
+
+// ❌ Pages router approach
+// pages/_app.tsx
+
+// ❌ Sync auth() call
+const { userId } = auth() // Missing await
+
+// ❌ Wrong import path for server methods
+import { auth } from '@clerk/nextjs'
+```
+
+## Verification Checklist
+
+- [ ] Using `clerkMiddleware()` not `authMiddleware()`
+- [ ] Imports from `@clerk/nextjs` or `@clerk/nextjs/server`
+- [ ] App Router structure (`app/` not `pages/`)
+- [ ] Server methods use `async/await`
