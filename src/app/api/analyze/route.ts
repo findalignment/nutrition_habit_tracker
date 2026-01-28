@@ -83,10 +83,28 @@ export async function POST(req: NextRequest) {
       throw new Error('User not found')
     }
 
-    // Run AI analysis
+    // Fetch recent check-ins (last 3 days) for context
+    const threeDaysAgo = new Date()
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3)
+    
+    const recentCheckIns = await prisma.checkIn.findMany({
+      where: {
+        userId: user.id,
+        createdAt: { gte: threeDaysAgo },
+        id: { not: checkInId }, // Exclude current check-in
+      },
+      include: {
+        aiResult: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 3,
+    })
+
+    // Run AI analysis with context
     const result = await analyzeCheckIn({
       checkIn,
       user: userWithGoal,
+      recentCheckIns,
     })
 
     // Store result

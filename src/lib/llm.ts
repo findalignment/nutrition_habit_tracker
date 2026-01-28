@@ -16,6 +16,7 @@ export interface AnalyzeCheckInInput {
   user: User & {
     goal: Goal | null
   }
+  recentCheckIns?: (CheckIn & { aiResult: any | null })[]
 }
 
 export interface AnalyzeCheckInResult {
@@ -65,11 +66,11 @@ export async function analyzeCheckIn(
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: 'system',
-      content: getSystemPrompt(user),
+      content: getSystemPrompt(),
     },
     {
       role: 'user',
-      content: await buildUserPrompt(checkIn, user),
+      content: await buildUserPrompt(checkIn, user, input.recentCheckIns),
     },
   ]
 
@@ -101,7 +102,7 @@ export async function analyzeCheckIn(
       response,
       async () => {
         console.log('Retrying LLM call with schema fix instruction...')
-        return await callLLM('Fix to schema.')
+        return await callLLM('Fix the output to match the schema exactly. Do not change content unless required for validity.')
       }
     )
 
@@ -157,76 +158,101 @@ function convertHabitScore(score: CheckInFeedback['habit_score']): HabitScore {
   }
 }
 
-function getSystemPrompt(user: User & { goal: Goal | null }): string {
-  const goalContext = user.goal
-    ? `The user's current goal is: "${user.goal.name}" - ${user.goal.description}`
-    : 'The user is working on general nutrition habits.'
+function getSystemPrompt(): string {
+  // Load system prompt from file
+  const fs = require('fs')
+  const path = require('path')
+  const systemPromptPath = path.join(process.cwd(), 'src/lib/prompts/system.md')
+  const systemPrompt = fs.readFileSync(systemPromptPath, 'utf-8')
+  
+  return systemPrompt
+}
 
+async function buildUserPrompt(
+  checkIn: CheckIn & { photos: CheckInPhoto[]; answers: CheckInAnswers | null },
+  user: User & { goal: Goal | null },
+  recentCheckIns?: (CheckIn & { aiResult: any | null })[]
+): Promise<string> {
+  // Assemble user message dynamically following the specified structure
+  
+  // USER GOAL
+  const goalSection = user.goal
+    ? `USER GOAL:\n${user.goal.name} — ${user.goal.description}\n`
+    : `USER GOAL:\nGeneral nutrition habits\n`
+
+  // USER PREFERENCES
   const preferences = user.preferences as any || {}
   const tone = preferences.tone || 'supportive'
   const dietary = []
   if (preferences.vegetarian) dietary.push('vegetarian')
   if (preferences.vegan) dietary.push('vegan')
-  const dietaryContext = dietary.length > 0 ? `They follow a ${dietary.join(', ')} diet.` : ''
+  if (preferences.noCalorieEstimates) dietary.push('no calorie estimates')
+  const allergies = preferences.allergies?.length > 0 ? `Allergies: ${preferences.allergies.join(', ')}` : ''
+  
+  const preferencesSection = `USER PREFERENCES:\nTone: ${tone}\n${dietary.length > 0 ? `Dietary: ${dietary.join(', ')}\n` : ''}${allergies ? allergies + '\n' : ''}`
 
-  return `You are a nutrition habit coach. ${goalContext} ${dietaryContext}
-
-Your tone should be ${tone}. 
-
-Analyze the user's check-in and return ONLY valid JSON matching this exact schema:
-
-{
-  "type": "checkin_feedback",
-  "habit_score": {
-    "protein": "missing" | "partial" | "ok",
-    "plants": "missing" | "partial" | "ok",
-    "liquid_calories": "unknown" | "low" | "medium" | "high",
-    "snacks": "unknown" | "low" | "medium" | "high",
-    "timing": "unknown" | "ok" | "needs_attention"
-  },
-  "feedback_short": "2-3 encouraging sentences (max 300 chars)",
-  "one_action": "One specific actionable tip (max 120 chars)",
-  "confidence": "low" | "medium" | "high",
-  "flags": {
-    "needs_clarification": boolean,
-    "safety_escalation": boolean,
-    "flag_reasons": ["reason1", "reason2"] // optional, max 5 items of 80 chars
-  },
-  "assumptions": ["assumption1", "assumption2"], // max 6 items of 120 chars
-  "optional_question": "One clarifying question if needed (max 120 chars)" // optional
-}
-
-Be concise, specific, and actionable.`
-}
-
-async function buildUserPrompt(
-  checkIn: CheckIn & { photos: CheckInPhoto[]; answers: CheckInAnswers | null },
-  user: User
-): Promise<string> {
-  let prompt = `Check-in for ${checkIn.mealType} on ${checkIn.date}.\n`
-
-  if (checkIn.notes) {
-    prompt += `\nUser notes: "${checkIn.notes}"\n`
+  // RECENT CONTEXT (last 3 days summary)
+  let recentContextSection = ''
+  if (recentCheckIns && recentCheckIns.length > 0) {
+    const recentPatterns = recentCheckIns
+      .slice(0, 3)
+      .map(c => {
+        const score = c.aiResult?.habitScore
+        const feedback = c.aiResult?.feedbackShort
+        return `${c.date} (${c.mealType}): ${feedback ? feedback.substring(0, 80) : 'No feedback'}`
+      })
+      .join('\n')
+    
+    recentContextSection = `RECENT CONTEXT (last 3 days summary):\n${recentPatterns}\n\n`
   }
 
-  if (checkIn.answers) {
-    prompt += `\nAnswers:\n`
-    if (checkIn.answers.drinksCalories) prompt += `- Drinks with calories: ${checkIn.answers.drinksCalories}\n`
-    if (checkIn.answers.alcohol) prompt += `- Alcohol: ${checkIn.answers.alcohol}\n`
-    if (checkIn.answers.snacks) prompt += `- Snacks: ${checkIn.answers.snacks}\n`
-    if (checkIn.answers.cookingTastes) prompt += `- Cooking tastes good: ${checkIn.answers.cookingTastes}\n`
-    if (checkIn.answers.supplements) prompt += `- Supplements: ${checkIn.answers.supplements}\n`
-    if (checkIn.answers.missedMeals) prompt += `- Missed meals: ${checkIn.answers.missedMeals}\n`
-    if (checkIn.answers.hungerLevel) prompt += `- Hunger level: ${checkIn.answers.hungerLevel}/5\n`
-    if (checkIn.answers.stressLevel) prompt += `- Stress level: ${checkIn.answers.stressLevel}/5\n`
-  }
-
+  // TODAY'S CHECK-IN DATA
+  let photoDescriptions = 'None'
   if (checkIn.photos.length > 0) {
-    prompt += `\n[Photos provided - analyze the meal in the image(s)]\n`
-    // Note: In production, you'd send the actual images to GPT-4 Vision
+    photoDescriptions = `${checkIn.photos.length} photo(s) provided`
+    // Note: In production, send actual images to GPT-4 Vision
   }
 
-  return prompt
+  const answers = checkIn.answers
+    ? Object.entries(checkIn.answers)
+        .filter(([key, value]) => value !== null && key !== 'id' && key !== 'checkInId' && key !== 'createdAt')
+        .map(([key, value]) => `  ${key}: ${value}`)
+        .join('\n')
+    : 'None provided'
+
+  const notes = checkIn.notes || 'None'
+  
+  const todaySection = `TODAY'S CHECK-IN DATA:
+Date: ${checkIn.date}
+Meal type: ${checkIn.mealType}
+Photos: ${photoDescriptions}
+Answers:
+${answers}
+Notes: ${notes}
+`
+
+  // TASK INSTRUCTION
+  const taskSection = `TASK:
+Generate a response following the checkin_feedback schema.`
+
+  // STRICT OUTPUT INSTRUCTION
+  const schemaEnforcement = `
+Return ONLY valid JSON that matches the \`checkin_feedback\` schema exactly.
+
+Rules:
+- Do not include explanations
+- Do not include markdown
+- Do not include text outside JSON
+- Do not add fields
+- Do not rename fields
+- Keep all strings within length limits
+
+If unsure, make reasonable assumptions and list them in \`assumptions\`.
+
+If you violate the schema, the response will be rejected.`
+
+  // Assemble final prompt
+  return `${goalSection}\n${preferencesSection}\n${recentContextSection}${todaySection}\n${taskSection}\n${schemaEnforcement}`
 }
 
 function getTextOnlyFeedback(
