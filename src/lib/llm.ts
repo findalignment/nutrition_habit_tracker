@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import type { CheckIn, CheckInAnswers, CheckInPhoto, Goal, User } from '@prisma/client'
 import { checkUserInputSafety, getSafeResponse } from './safety'
 import type { HabitScore } from './scoring'
+import { checkInFeedbackSchema, validateLLMResponse, type CheckInFeedback } from './validators'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -72,24 +73,55 @@ export async function analyzeCheckIn(
     },
   ]
 
-  try {
+  // Function to call LLM with optional retry instruction
+  const callLLM = async (retryInstruction?: string) => {
+    const finalMessages = retryInstruction
+      ? [...messages, { role: 'user' as const, content: retryInstruction }]
+      : messages
+
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
-      messages,
+      messages: finalMessages,
       temperature: 0.7,
       max_tokens: 800,
       response_format: { type: 'json_object' },
     })
 
     const responseText = completion.choices[0]?.message?.content || '{}'
-    const result = JSON.parse(responseText)
+    return JSON.parse(responseText)
+  }
 
+  try {
+    // First attempt
+    const response = await callLLM()
+    
+    // Validate with automatic retry on failure
+    const validation = await validateLLMResponse(
+      checkInFeedbackSchema,
+      response,
+      async () => {
+        console.log('Retrying LLM call with schema fix instruction...')
+        return await callLLM('Fix to schema.')
+      }
+    )
+
+    if (!validation.success) {
+      console.error('LLM validation failed:', validation.error)
+      throw new Error(validation.error)
+    }
+
+    // Map validated response to return format
+    const data = validation.data
     return {
-      habitScore: result.habitScore || { protein: 5, plants: 5, liquids: 5, snacks: 5, training: 5 },
-      feedbackShort: result.feedbackShort || 'Keep building those habits!',
-      oneAction: result.oneAction || 'Focus on one small improvement tomorrow.',
-      confidence: result.confidence || 'med',
-      flags: result.flags,
+      habitScore: convertHabitScore(data.habit_score),
+      feedbackShort: data.feedback_short,
+      oneAction: data.one_action,
+      confidence: data.confidence === 'medium' ? 'med' : data.confidence,
+      flags: {
+        possibleED: data.flags.safety_escalation,
+        medical: data.flags.safety_escalation,
+        unsafe: data.flags.safety_escalation,
+      },
     }
   } catch (error) {
     console.error('LLM analysis error:', error)
@@ -101,6 +133,27 @@ export async function analyzeCheckIn(
       oneAction: 'Try to include more variety in your next meal.',
       confidence: 'low',
     }
+  }
+}
+
+// Helper to convert new habit score format to legacy format
+function convertHabitScore(score: CheckInFeedback['habit_score']): HabitScore {
+  const toNumber = (value: string): number => {
+    if (value === 'ok') return 8
+    if (value === 'partial') return 5
+    if (value === 'missing') return 2
+    if (value === 'low') return 8
+    if (value === 'medium') return 5
+    if (value === 'high') return 2
+    return 5 // unknown
+  }
+
+  return {
+    protein: toNumber(score.protein),
+    plants: toNumber(score.plants),
+    liquids: 10 - toNumber(score.liquid_calories), // inverse
+    snacks: 10 - toNumber(score.snacks), // inverse
+    training: score.timing === 'ok' ? 8 : score.timing === 'needs_attention' ? 3 : 5,
   }
 }
 
@@ -120,14 +173,30 @@ function getSystemPrompt(user: User & { goal: Goal | null }): string {
 
 Your tone should be ${tone}. 
 
-Analyze the user's check-in and provide:
-1. habitScore: JSON object with keys: protein (0-10), plants (0-10), liquids (0-10), snacks (0-10), training (0-10)
-2. feedbackShort: 2-3 sentence encouraging feedback
-3. oneAction: One specific actionable tip for their next meal
-4. confidence: "low", "med", or "high" based on available info
-5. flags: optional object with possibleED, medical, or unsafe boolean flags
+Analyze the user's check-in and return ONLY valid JSON matching this exact schema:
 
-Return ONLY valid JSON with these exact keys.`
+{
+  "type": "checkin_feedback",
+  "habit_score": {
+    "protein": "missing" | "partial" | "ok",
+    "plants": "missing" | "partial" | "ok",
+    "liquid_calories": "unknown" | "low" | "medium" | "high",
+    "snacks": "unknown" | "low" | "medium" | "high",
+    "timing": "unknown" | "ok" | "needs_attention"
+  },
+  "feedback_short": "2-3 encouraging sentences (max 300 chars)",
+  "one_action": "One specific actionable tip (max 120 chars)",
+  "confidence": "low" | "medium" | "high",
+  "flags": {
+    "needs_clarification": boolean,
+    "safety_escalation": boolean,
+    "flag_reasons": ["reason1", "reason2"] // optional, max 5 items of 80 chars
+  },
+  "assumptions": ["assumption1", "assumption2"], // max 6 items of 120 chars
+  "optional_question": "One clarifying question if needed (max 120 chars)" // optional
+}
+
+Be concise, specific, and actionable.`
 }
 
 async function buildUserPrompt(
