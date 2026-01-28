@@ -14,6 +14,7 @@ export default function LoginPage() {
         </div>
         
         <SignIn
+          routing="hash"
           appearance={{
             elements: {
               rootBox: 'mx-auto',
