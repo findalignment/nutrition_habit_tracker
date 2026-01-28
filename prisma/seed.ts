@@ -58,11 +58,19 @@ async function main() {
   ]
 
   for (const goal of goals) {
-    await prisma.goal.upsert({
+    // Check if goal already exists
+    const existing = await prisma.goal.findFirst({
       where: { name: goal.name },
-      update: {},
-      create: goal,
     })
+
+    if (!existing) {
+      await prisma.goal.create({
+        data: goal,
+      })
+      console.log(`Created goal: ${goal.name}`)
+    } else {
+      console.log(`Goal already exists: ${goal.name}`)
+    }
   }
 
   console.log('Database seeded successfully!')
