@@ -162,10 +162,14 @@ function getSystemPrompt(): string {
   // Load system prompt from file
   const fs = require('fs')
   const path = require('path')
-  const systemPromptPath = path.join(process.cwd(), 'src/lib/prompts/system.md')
-  const systemPrompt = fs.readFileSync(systemPromptPath, 'utf-8')
   
-  return systemPrompt
+  const systemPromptPath = path.join(process.cwd(), 'src/lib/prompts/system.md')
+  const checkinInstructionsPath = path.join(process.cwd(), 'src/lib/prompts/checkin_instructions.md')
+  
+  const systemPrompt = fs.readFileSync(systemPromptPath, 'utf-8')
+  const checkinInstructions = fs.readFileSync(checkinInstructionsPath, 'utf-8')
+  
+  return `${systemPrompt}\n\n---\n\n${checkinInstructions}`
 }
 
 async function buildUserPrompt(
